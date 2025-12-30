@@ -367,41 +367,8 @@
             z-index: 6;
         }
 
+        /* When video is active, maybe hide messages? or overlay? */
         /* Let's keep it simple: Video overlaps messages area. */
-
-
-        /* Toast Notification */
-        #toast-container {
-            position: fixed;
-            top: 80px;
-            left: 50%;
-            transform: translateX(-50%);
-            z-index: 9999;
-            pointer-events: none;
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-        }
-
-        .toast-msg {
-            background: rgba(0, 0, 0, 0.8);
-            color: white;
-            padding: 12px 24px;
-            border-radius: 50px;
-            font-size: 16px;
-            font-weight: 500;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-            animation: slideDownFade 0.4s ease-out forwards;
-            opacity: 0;
-            transform: translateY(-20px);
-        }
-
-        @keyframes slideDownFade {
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
     </style>
 </head>
 
@@ -427,7 +394,11 @@
                         style="background:transparent; border:none; font-size:18px; color:#555; cursor:pointer;">📥</button>
                     <button class="icon-btn" onclick="clearHistory()" title="清除紀錄"
                         style="background:transparent; border:none; font-size:18px; color:#555; cursor:pointer;">🗑️</button>
-
+                    <div style="width:1px; height:20px; background:#ddd; margin:0 5px;"></div>
+                    <button id="voice-btn" class="icon-btn" onclick="toggleVoice()" title="語音通話"
+                        style="background:transparent; border:none; font-size:20px; color:#555; cursor:pointer;">📞</button>
+                    <button id="video-btn" class="icon-btn" onclick="toggleVideo()" title="視訊通話"
+                        style="background:transparent; border:none; font-size:20px; color:#555; cursor:pointer;">📹</button>
                     <!-- Sidebar removed for 1-on-1 -->
                 </div>
             </div>
@@ -439,6 +410,7 @@
 
             <div id="video-container">
                 <video id="remote-video" autoplay playsinline></video>
+                <video id="local-video" autoplay playsinline muted></video>
             </div>
 
             <div id="messages">
@@ -461,8 +433,6 @@
         </div>
 
         <!-- Sidebar removed for 1-on-1 -->
-
-        <div id="toast-container"></div>
 
         <!-- Connection Overlay -->
         <div id="overlay">
@@ -862,8 +832,13 @@
                     const msg = `${defaultName} 加入了`;
                     broadcast({ type: 'system', text: msg });
                     appendSystemMsg(msg);
-                    showToast(`👋 ${defaultName} 上線了！`);
                     broadcastUserList();
+
+                    // If Host is broadcasting (Mic on), call new guest
+                    if (localStream) {
+                        const call = peer.call(conn.peer, localStream);
+                        handleCall(call);
+                    }
                 });
 
                 conn.on('data', (data) => {
@@ -908,12 +883,7 @@
                 }
                 if (data.type === 'chat') addMessageUI(data.nickname, data.text, false);
                 if (data.type === 'image') addImageUI(data.nickname, data.image, false);
-                if (data.type === 'system') {
-                    appendSystemMsg(data.text);
-                    if (data.text.includes("加入")) {
-                        showToast(`👋 ${data.text}`);
-                    }
-                }
+                if (data.type === 'system') appendSystemMsg(data.text);
                 if (data.type === 'userList') renderUserList(data.list);
             }
 
@@ -970,14 +940,90 @@
             // ===================================
             // Voice & Video Chat Logic
             // ===================================
+            let localStream = null;
             let currentCall = null;
+            const voiceBtn = document.getElementById('voice-btn');
+            const videoBtn = document.getElementById('video-btn');
             const videoContainer = document.getElementById('video-container');
             const remoteVideo = document.getElementById('remote-video');
+            const localVideo = document.getElementById('local-video');
 
+            async function toggleVoice() {
+                if (localStream && !localStream.getVideoTracks().length) {
+                    endCall();
+                } else {
+                    startCall(false);
+                }
+            }
 
+            async function toggleVideo() {
+                if (localStream && localStream.getVideoTracks().length > 0) {
+                    endCall();
+                } else {
+                    startCall(true);
+                }
+            }
+
+            async function startCall(videoEnabled) {
+                try {
+                    if (currentCall) {
+                        currentCall.close();
+                        currentCall = null;
+                    }
+                    if (localStream) {
+                        localStream.getTracks().forEach(t => t.stop());
+                    }
+
+                    // Get Media
+                    const constraints = {
+                        audio: true,
+                        video: videoEnabled ? { facingMode: "user" } : false
+                    };
+                    localStream = await navigator.mediaDevices.getUserMedia(constraints);
+
+                    // Update UI Buttons
+                    updateVoiceBtn(true);
+                    updateVideoBtn(videoEnabled);
+
+                    if (videoEnabled) {
+                        videoContainer.style.display = 'block';
+                        localVideo.srcObject = localStream;
+                    } else {
+                        videoContainer.style.display = 'none';
+                    }
+
+                    // Log Call Start
+                    appendSystemMsg((videoEnabled ? "視訊" : "語音") + "通話開始");
+
+                    if (!isHost) {
+                        appendSystemMsg(videoEnabled ? "正在發起視訊..." : "正在呼叫主持人...", false);
+                        const call = peer.call(LOBBY_ID, localStream);
+                        handleCall(call);
+                    } else {
+                        // Host Broadcast
+                        if (connections.length === 0) {
+                            appendSystemMsg("麥克風/鏡頭已開啟 (等待連線)", false);
+                        } else {
+                            connections.forEach(c => {
+                                const call = peer.call(c.id, localStream);
+                                handleCall(call);
+                            });
+                            appendSystemMsg("已開啟廣播", false);
+                        }
+                    }
+                } catch (err) {
+                    console.error(err);
+                    alert("無法取得媒體權限: " + err);
+                    endCall();
+                }
+            }
 
             function handleIncomingCall(call) {
-                call.answer();
+                if (localStream) {
+                    call.answer(localStream);
+                } else {
+                    call.answer();
+                }
                 handleCall(call);
             }
 
@@ -1013,7 +1059,33 @@
                 });
             }
 
+            function endCall() {
+                if (currentCall) {
+                    currentCall.close();
+                    currentCall = null;
+                }
+                if (localStream) {
+                    localStream.getTracks().forEach(t => t.stop());
+                    localStream = null;
+                }
+                updateVoiceBtn(false);
+                updateVideoBtn(false);
+                videoContainer.style.display = 'none';
+                appendSystemMsg("通話結束"); // This auto-saves
+            }
 
+            function updateVoiceBtn(isActive) {
+                voiceBtn.style.background = isActive ? "#28a745" : "transparent";
+                voiceBtn.style.color = isActive ? "white" : "#555";
+                voiceBtn.innerText = isActive ? "🎙️" : "📞";
+                voiceBtn.title = isActive ? "點擊掛斷" : "發起語音";
+            }
+
+            function updateVideoBtn(isActive) {
+                videoBtn.style.background = isActive ? "#28a745" : "transparent";
+                videoBtn.style.color = isActive ? "white" : "#555";
+                videoBtn.title = isActive ? "關閉視訊" : "開啟視訊";
+            }
 
             // ===================================
             // Screen Sharing Logic
@@ -1335,24 +1407,6 @@
                 updateTransform();
             }, { passive: false });
 
-            // Mobile Pinch-to-Zoom Logic -- (Truncated or existing logic)
-
-            // Toast Function
-            function showToast(text) {
-                const container = document.getElementById('toast-container');
-                const div = document.createElement('div');
-                div.className = 'toast-msg';
-                div.innerText = text;
-                container.appendChild(div);
-
-                // Auto remove
-                setTimeout(() => {
-                    div.style.transition = "all 0.5s ease";
-                    div.style.opacity = "0";
-                    div.style.transform = "translateY(-20px)";
-                    setTimeout(() => div.remove(), 500);
-                }, 3000);
-            }
         </script>
 
 </body>
