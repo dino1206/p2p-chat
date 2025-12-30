@@ -843,6 +843,13 @@
 
             function handleIncomingGuest(conn) {
                 conn.on('open', () => {
+                    // Check 1-on-1 Limit
+                    if (connections.length >= 1) {
+                        conn.send({ type: 'error', text: '目前頻道使用中　請稍候或洽櫃台重新開啟' });
+                        setTimeout(() => conn.close(), 1000);
+                        return;
+                    }
+
                     guestCounter++;
                     const defaultName = "路人" + guestCounter;
                     connections.push({ conn: conn, id: conn.peer, nickname: defaultName });
@@ -889,6 +896,11 @@
 
             function handleDataReceived(data, fromConn) {
                 if (!data) return;
+                if (data.type === 'error') {
+                    showOverlay("連線被拒絕", data.text, false);
+                    overlayRetryBtn.style.display = 'none'; // No retry for this
+                    return;
+                }
                 if (data.type === 'welcome') {
                     if (myNickname === "訪客" || myNickname.startsWith("路人")) myNickname = data.assignedName;
                     else if (hostConn) hostConn.send({ type: 'updateName', nickname: myNickname });
